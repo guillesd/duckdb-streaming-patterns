@@ -1,5 +1,6 @@
 import duckdb
 import time
+import argparse
 
 DB_FILE = "events.duckdb"
 RAW_VIEW = "raw_events_view"
@@ -21,7 +22,7 @@ def create_streaming_views(con: duckdb.DuckDBPyConnection, bootstrap_servers: st
                 FROM tributary_scan_topic('{topic}', "bootstrap.servers" := "{bootstrap_servers}");
         """)
         cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {DEST_VIEW} AS
+            CREATE VIEW IF NOT EXISTS {DEST_VIEW} AS
                 SELECT 
                     user_id,
                     user_name,
@@ -47,21 +48,24 @@ def query_streaming_view(con: duckdb.DuckDBPyConnection, duration_seconds: int):
             try:
                 print("Querying top 5 users by click count:")
                 cursor.sql(f"SELECT * FROM {DEST_VIEW} ORDER BY count_of_clicks DESC LIMIT 5;").show()
+                time.sleep(5)
             except Exception as e:
                 print("Query error:", e)
         
         time.sleep(1)
 
 def main():
-    bootstrap_servers = "localhost:9092"
-    topic = "my_topic"
-    duration_seconds = 20 #maybe parameterize
+    parser = argparse.ArgumentParser(description="Kafka to DuckDB streaming pipeline")
+    parser.add_argument("--bootstrap-servers", type=str, default="localhost:9092", help="Kafka bootstrap servers")
+    parser.add_argument("--topic", type=str, default="my_topic", help="Kafka topic to consume from")
+    parser.add_argument("--duration-seconds", type=int, default=20, help="Duration to run the pipeline (seconds)")
+    args = parser.parse_args()
 
     con = duckdb.connect(DB_FILE)
 
     con.execute("INSTALL tributary FROM community; LOAD tributary;")
-    create_streaming_views(con, bootstrap_servers, topic)
-    query_streaming_view(con, duration_seconds) # trying to be fancy
+    create_streaming_views(con, args.bootstrap_servers, args.topic)
+    query_streaming_view(con, args.duration_seconds) # trying to be fancy
     con.close()
 
 if __name__ == "__main__":

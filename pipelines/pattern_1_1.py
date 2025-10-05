@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from confluent_kafka import Consumer
 import duckdb
+import argparse
 
 """
 Pattern 1.1: Basic Streaming with Kafka and DuckDB
@@ -125,16 +126,18 @@ def aggregate_loop(con: duckdb.DuckDBPyConnection, duration_seconds: int):
 
 
 def main():
-    bootstrap_servers = "localhost:9092"
-    topic = "my_topic"
-    duration_seconds = 40 #maybe parameterize
+    parser = argparse.ArgumentParser(description="Kafka to DuckDB streaming pipeline")
+    parser.add_argument("--bootstrap-servers", type=str, default="localhost:9092", help="Kafka bootstrap servers")
+    parser.add_argument("--topic", type=str, default="my_topic", help="Kafka topic to consume from")
+    parser.add_argument("--duration-seconds", type=int, default=20, help="Duration to run the pipeline (seconds)")
+    args = parser.parse_args()
 
     con = duckdb.connect(DB_FILE)
 
     init_db(con)
 
-    t1 = threading.Thread(target=consume_and_insert, args=(bootstrap_servers, topic, con, duration_seconds), daemon=True)
-    t2 = threading.Thread(target=aggregate_loop, args=(con, duration_seconds), daemon=True)
+    t1 = threading.Thread(target=consume_and_insert, args=(args.bootstrap_servers, args.topic, con, args.duration_seconds), daemon=True)
+    t2 = threading.Thread(target=aggregate_loop, args=(con, args.duration_seconds), daemon=True)
 
     t1.start()
     t2.start()

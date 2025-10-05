@@ -41,13 +41,23 @@ python scripts/producer.py --bootstrap-servers localhost:9092 --topic my_topic -
 
 Example: Run Pattern 1.1 (DuckDB streaming and aggregation)
 ```
-python pipelines/pattern_1_1.py
+python pipelines/pattern_1_1.py --bootstrap-servers localhost:9092 --topic my_topic --duration 60
 ```
 
-Other patterns can be run similarly:
-- DuckLake: `python pipelines/pattern_1_2.py`
-- Spark: `python pipelines/pattern_2.py`
-- Tributary: `python pipelines/bonus_pattern.py`
+Other patterns can be run similarly (add `--bootstrap-servers`, `--topic`, and `--duration` as needed):
+
+- DuckLake:  
+  ```
+  python pipelines/pattern_1_2.py --bootstrap-servers localhost:9092 --topic my_topic --duration 60
+  ```
+- Spark:  
+  ```
+  python pipelines/pattern_2.py --bootstrap-servers localhost:9092 --topic my_topic --duration 60
+  ```
+- Tributary:  
+  ```
+  python pipelines/bonus_pattern.py --bootstrap-servers localhost:9092 --topic my_topic --duration 60
+  ```
 
 ### Cleanup
 

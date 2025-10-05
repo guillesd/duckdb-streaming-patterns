@@ -2,6 +2,8 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import col, from_json, to_timestamp, count, max as max_
 from pyspark.sql.types import StructType, StructField, StringType
 import duckdb
+import argparse
+import time
 
 # JDBC URL for DuckDB
 JDBC_URL = "jdbc:duckdb:./events.duckdb"
@@ -9,7 +11,7 @@ PROPERTIES = {
     "driver": "org.duckdb.DuckDBDriver"
 }
 
-def spark_kafka_to_duckdb():
+def spark_kafka_to_duckdb(duration_seconds: int = 20, bootstrap_servers: str = "localhost:9092", topic: str = "my_topic"):
     """
     Stream data from Kafka, aggregate CLICK events, and store results in DuckDB using Spark Structured Streaming.
     """
@@ -60,7 +62,10 @@ def spark_kafka_to_duckdb():
         .outputMode("complete") \
         .start()
 
-    query.awaitTermination()
+    # Stop it manually after the specified duration
+    query.awaitTermination(duration_seconds)
+    if query.isActive:
+        query.stop()
 
 
 # Function to overwrite data in DuckDB inside foreachBatch
@@ -108,4 +113,14 @@ def insert_overwrite_duckdb(batch_df: DataFrame, batch_id: int):
     con.close()
 
 if __name__ == "__main__":
-    spark_kafka_to_duckdb()
+    parser = argparse.ArgumentParser(description="Kafka to DuckDB streaming pipeline")
+    parser.add_argument("--bootstrap-servers", type=str, default="localhost:9092", help="Kafka bootstrap servers")
+    parser.add_argument("--topic", type=str, default="my_topic", help="Kafka topic to consume from")
+    parser.add_argument("--duration-seconds", type=int, default=20, help="Duration to run the pipeline (seconds)")
+    args = parser.parse_args()
+
+    spark_kafka_to_duckdb(
+        duration_seconds=args.duration_seconds,
+        bootstrap_servers=args.bootstrap_servers,
+        topic=args.topic
+    )

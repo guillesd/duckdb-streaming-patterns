@@ -3,3 +3,5 @@ events.duckdb
 events.duckdb.wal
 events_ducklake.db
 events_ducklake.db.files/
+v1.4.0/
+build/

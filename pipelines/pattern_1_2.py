@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from confluent_kafka import Consumer
 import duckdb
+import argparse
 
 """
 Pattern 1.2: Basic Streaming with Kafka and DuckLake
@@ -33,7 +34,7 @@ def init_db(con: duckdb.DuckDBPyConnection):
             user_id VARCHAR,
             user_name VARCHAR,
             count_of_clicks BIGINT,
-            updated_at TIMESTAMP
+            last_snapshot INT,        
         )
     """)
     cursor.close()
@@ -82,71 +83,76 @@ def consume_and_insert(bootstrap_servers: str, topic: str, con: duckdb.DuckDBPyC
     
 
 # Aggregation thread — runs every 5s
-def aggregate_loop(con: duckdb.DuckDBPyConnection, duration_seconds: int):
-    cursor = con.cursor()
-    cursor.execute("USE events_ducklake;")
+def aggregate_loop(con: duckdb.DuckDBPyConnection, duration_seconds: int):    
     start_time = time.time()
-    while time.time() - start_time < duration_seconds:
-        try:
-            # Determine the latest updated_at in the destination table
-            last_updated = cursor.execute(f"SELECT max(updated_at) FROM {DEST_TABLE}").fetchone()[0]
+    with con.cursor() as cursor:
+        cursor.execute("USE events_ducklake;")
+        while time.time() - start_time < duration_seconds:
+            try:
+                # Determine the latest last_snapshot in the destination table
+                last_snapshot_update = cursor.execute(f"SELECT max(last_snapshot) FROM {DEST_TABLE}").fetchone()[0] or 0
+                max_snapshot = cursor.execute(f"SELECT max(snapshot_id) FROM events_ducklake.snapshots();").fetchone()[0]
 
-            # Aggregate only new raw data
-            aggregate_sql = f"""
-                MERGE INTO {DEST_TABLE} AS dest
-                USING (
-                    SELECT 
-                        user_id,
-                        user_name,
-                        COUNT(*) AS count_of_clicks,
-                        MAX(timestamp) AS updated_at
-                    FROM events_ducklake.table_changes('{RAW_TABLE}', ?, now())
-                    WHERE event_type = 'CLICK'
-                    GROUP BY user_id, user_name
-                ) AS src
-                ON dest.user_id = src.user_id
-                WHEN MATCHED THEN 
-                    UPDATE SET 
-                        count_of_clicks = dest.count_of_clicks + src.count_of_clicks,
-                        updated_at = src.updated_at
-                WHEN NOT MATCHED THEN
-                    INSERT (user_id, user_name, count_of_clicks, updated_at)
-                    VALUES (src.user_id, src.user_name, src.count_of_clicks, src.updated_at)
-            """
-            cursor.execute(aggregate_sql, [last_updated, last_updated])
+                # Aggregate only new raw data
+                aggregate_sql = f"""
+                    MERGE INTO {DEST_TABLE} AS dest
+                    USING (
+                        SELECT 
+                            user_id,
+                            user_name,
+                            COUNT(*) AS count_of_clicks,
+                            ? AS last_snapshot,
+                        FROM events_ducklake.table_changes('{RAW_TABLE}', ?, ?)
+                        WHERE event_type = 'CLICK'
+                        GROUP BY user_id, user_name
+                    ) AS src
+                    ON dest.user_id = src.user_id
+                    WHEN MATCHED THEN 
+                        UPDATE SET 
+                            count_of_clicks = dest.count_of_clicks + src.count_of_clicks,
+                            last_snapshot = src.last_snapshot
+                    WHEN NOT MATCHED THEN
+                        INSERT (user_id, user_name, count_of_clicks, last_snapshot)
+                        VALUES (src.user_id, src.user_name, src.count_of_clicks, src.last_snapshot)
+                """
+                cursor.execute(aggregate_sql, [max_snapshot, last_snapshot_update, max_snapshot])
 
-            print(f"Aggregation executed at {datetime.now()}")
+                print(f"Aggregation executed at {datetime.now()} from {last_snapshot_update} to {max_snapshot}")
+                time.sleep(5)
 
-        except Exception as e:
-            print("Aggregation error:", e)
-        finally:
-            cursor.close()
+            except Exception as e:
+                print("Aggregation error:", e)
 
-        time.sleep(5)
         
 
 
 def main():
-    bootstrap_servers = "localhost:9092"
-    topic = "my_topic"
-    duration_seconds = 5
+    parser = argparse.ArgumentParser(description="Kafka to DuckDB streaming pipeline")
+    parser.add_argument("--bootstrap-servers", type=str, default="localhost:9092", help="Kafka bootstrap servers")
+    parser.add_argument("--topic", type=str, default="my_topic", help="Kafka topic to consume from")
+    parser.add_argument("--duration-seconds", type=int, default=20, help="Duration to run the pipeline (seconds)")
+    args = parser.parse_args()
 
-    con = duckdb.connect()
-    con.execute("INSTALL ducklake; LOAD ducklake;")
+    con = duckdb.connect(config = {"allow_unsigned_extensions": "true"})
+    con.execute("FORCE INSTALL ducklake; LOAD ducklake;")
     con.execute("ATTACH 'ducklake:events_ducklake.db' AS events_ducklake (DATA_INLINING_ROW_LIMIT 10);")
     init_db(con)
 
-    t1 = threading.Thread(target=consume_and_insert, args=(bootstrap_servers, topic, con, duration_seconds))
-    # t2 = threading.Thread(target=aggregate_loop, args=(con, duration_seconds), daemon=True)
+    t1 = threading.Thread(target=consume_and_insert, args=(args.bootstrap_servers, args.topic, con, args.duration_seconds))
+    t2 = threading.Thread(target=aggregate_loop, args=(con, args.duration_seconds), daemon=True)
 
     t1.start()
-    # t2.start()
+    t2.start()
 
     t1.join()
-    # t2.join()
+    t2.join()
 
     # Final flush to ensure all inlined data is persisted to Parquet files
+    print("Flushing inlined data to Parquet files...")
     con.execute(f"CALL ducklake_flush_inlined_data('events_ducklake', table_name => '{RAW_TABLE}');")
+    print("Compacting files...")
+    con.execute(f"CALL ducklake_rewrite_data_files('events_ducklake', '{DEST_TABLE}');")
+    con.execute(f"CALL ducklake_merge_adjacent_files('events_ducklake', '{DEST_TABLE}');")
     con.close()
 
 if __name__ == "__main__":
